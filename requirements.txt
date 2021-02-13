@@ -1,0 +1,5 @@
+python-dotenv
+mysql-connector-python
+python-mpd2
+spotipy
+tornado
