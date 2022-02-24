@@ -4,42 +4,46 @@
   <meta charset="utf-8" />
   <title>Kakeplay</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-  <link rel="stylesheet" href="bootstrap-4.5.3-dist/css/bootstrap.min.css" crossorigin="anonymous">
-  <script src="jquery-3.5.1.min.js"></script>
-  <script src="bootstrap-4.5.3-dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
+  <link rel="stylesheet" href="static/bootstrap-4.5.3-dist/css/bootstrap.min.css" crossorigin="anonymous">
+  <script src="static/jquery-3.5.1.min.js"></script>
+  <script src="static/bootstrap-4.5.3-dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
+  <link href="static/fontawesome-free-5.15.4-web/css/all.min.css" rel="stylesheet">
+  <script>
+    var SPOTIFY_PLAYBACK_DEVICE_NAME = "{{ playback_device_name }}";
+  </script>
   <style>
-    body {}
+    body {background-color: #dcdad5; max-width: 500px; margin-left: auto; margin-right: auto;}
 
     a:link {color: black;}
     a:visited {color: black;}
 
     .songresult { margin-bottom: 0px; max-width: 500px; overflow: hidden; white-space: nowrap; overflow: hidden; margin-left: auto; margin-right: auto;}
-    .songresult:nth-child(odd){background-color: #dcdcdc}
+    .songresult:nth-child(odd){background-color: #d1cfca}
     .songresult_img {float: left; width: 50px; height: 50px; margin-right: 4px;}
 
     .credits {display: inline-block; background-image: url('static/credit.png'); background-size: contain; width: 25px; text-align: center;}
     .credits_search {float: right; margin-top: 14px;}
+
+    {% if not admin %}
+      .deletesongbtn {display: none}
+    {% end %}
+
+    .nav {display: none;}
+    a.nav-link {background-color: darkgrey !important; color: black;}
+    a.nav-link.active {background-color: white !important}
   </style>
 </head>
 
 <body>
 
-<!-- Tab list -->
-<ul class="nav nav-tabs" id="myTab" role="tablist">
-  <li class="nav-item" role="presentation">
-    <a class="nav-link active" id="spotify-tab" data-toggle="tab" href="#spotify-results" role="tab" aria-controls="spotify-results" aria-selected="true">Spotify-sökresultat</a>
-  </li>
-  <li class="nav-item" role="presentation">
-    <a class="nav-link" id="mp3-tab" data-toggle="tab" href="#mp3-results" role="tab" aria-controls="mp3-results" aria-selected="false">MP3-sökresultat</a>
-  </li>
-</ul>
-
 
 <div style="float: left;">
-  Hej, {{ name }} <div class="credits" id="credit_saldo" style="">{{ credits }}</div>
+  Hej, {{ name }}
+  {% if admin %} (Admin) {% end %}
+  <div class="credits" id="credit_saldo" style="">{{ credits }}</div>
 </div>
 <div style="text-align: right;">
-  <a href="logout">Logga ut</a></p>
+  <a href="logout" class="fas fa-sign-out-alt"></a></p>
 </div>
 
 
@@ -50,14 +54,16 @@
 </form>
 
 
-<!-- Volume slider, always visible -->
-<div style="max-width: 300px; margin: auto;">
-  <div style="float: left; ">
-    <input type="range" min="1" max="100" value="50" id="volume" style="width: 270px;">
-  </div>
-  <div id="volumeindicator" style="text-align: left;"></div>
-  <div style="clear: both;"></div>
-</div>
+
+<!-- Tab list -->
+<ul class="nav nav-tabs" id="myTab" role="tablist">
+  <li class="nav-item" role="presentation">
+    <a class="nav-link active" id="spotify-tab" data-toggle="tab" href="#spotify-results" role="tab" aria-controls="spotify-results" aria-selected="true">Spotify-sökresultat</a>
+  </li>
+  <li class="nav-item" role="presentation">
+    <a class="nav-link" id="mp3-tab" data-toggle="tab" href="#mp3-results" role="tab" aria-controls="mp3-results" aria-selected="false">MP3-sökresultat</a>
+  </li>
+</ul>
 
 
 <!-- Search results -->
@@ -71,168 +77,30 @@
 
 <div class="queue"></div>
 
+<div style="position: fixed; bottom: 0px; left: 0px; width: 100%;">
+  <!-- Volume slider, always visible -->
+  <div style="max-width: 500px; margin: auto; display: flex; justify-content: center; flex-wrap: wrap;">
+    <div style="">
+      <i class="fas fa-volume-up" style="font-size: 1.2em;"></i>
+      <input type="range" min="1" max="100" value="50" id="volume" style="width: 245px; vertical-align: top">
+    </div>
+    <div id="volumeindicator" style="text-align: left; margin-top: -3px;"></div>
+
+    {% if admin %}
+      <!-- Play/pause buttons -->
+      <div style="text-align: left; float: left; padding-left: 10px; font-size: 1.2em; margin-top: -4px;">
+        <i data-action="play" style="cursor: pointer;" class="mediacontrolbtn fas fa-play"></i>
+        <i data-action="pause" style="cursor: pointer;" class="mediacontrolbtn fas fa-pause"></i>
+        <i data-action="prev" style="cursor: pointer;" class="mediacontrolbtn fas fa-step-backward"></i>
+        <i data-action="next" style="cursor: pointer;" class="mediacontrolbtn fas fa-step-forward"></i>
+      </div>
+    {% end %}
+  </div>
 
 
-<script>
+</div>
 
-// On click on search results link
-// append event listeners to dynamic content is as follows
-$(document).on('click','.tracklink',function(e){
-  event.preventDefault();
-  window.history.back();
-  $.get( $(this).attr("href") )
-    .done(function(data) {
-      if(data != "")
-        alert(data);
-      window.clearTimeout(timer);
-      timer = setTimeout(updateCurrent, 1000)
-      updateQueue();
-    })
-    .fail(function(data) {
-      if(data != "")
-        alert(data['responseText']);
-    });
+<script src="static/scripts.js"></script>
 
-    // Decrement credits
-    $('.credits').html( Number($('#credit_saldo').text()) - Number($(this).data("credits")) );
-});
-
-// On press on search button
-$("#searchform").submit(function(event) {
-  event.preventDefault();
-
-  // Make search result appear to user as a separate page, allow use of back button to exit search results
-  $(".queue").css("display", "none");
-  $("#currentlyPlaying").css("display", "none");
-  window.history.pushState('forward', null, "#search/"+$("input").first().val());
-  $(window).on('popstate', function() {
-    $(".queue").css("display", "block");
-    $("#currentlyPlaying").css("display", "block");
-    $("#spotify-results").html("");
-    $("#mp3-results").html("");
-  });
-
-  // Search Spotify
-  $( "#spotify-results" ).html("");
-  $.post( "search", $("input").first().val())
-    .done(function(data) {
-      for(var key in data['results']) {
-        //$( ".result" ).append('<a href="" id="'+data['results'][key]['id']+'" class="tracklink">'
-        $( "#spotify-results" ).append('<div class="songresult">'
-        +'<img class="songresult_img" src="'+data['results'][key]['image'][2]['url']+'" />'
-        +'<div class="credits credits_search">'+data['results'][key]['credits'] + '</div>'
-        +'<a href="play_track/'+data['results'][key]['id'] + '" class="tracklink" data-credits="'+data['results'][key]['credits']+'">'
-        +'<div class="songtitle" style="font-weight: bold;">'+data['results'][key]['name'] + "</div>"
-        +'<div class="songartist">'+data['results'][key]['artist'] + '</div>'
-        +'<div style="clear: left;"'
-        + "</a></div>" );
-      }
-    })
-    .fail(function(data) {
-      if(data != "")
-        alert(data['responseText']);
-    });
-
-
-    // Search MP3
-    $( "#mp3-results" ).html("");
-    $.post( "mpdsearch", $("input").first().val())
-      .done(function(data) {
-        for(var key in data['results']) {
-          //$( ".result" ).append('<a href="" id="'+data['results'][key]['id']+'" class="tracklink">'
-          $( "#mp3-results" ).append('<div class="songresult">'
-          +'<img class="songresult_img" src="'+data['results'][key]['image'][2]['url']+'" />'
-          +'<div class="credits credits_search">'+data['results'][key]['credits'] + '</div>'
-          +'<a href="mpd_play_track?url='+data['results'][key]['id'] + '" class="tracklink" data-credits="'+data['results'][key]['credits']+'">'
-          +'<div class="songtitle" style="font-weight: bold;">'+data['results'][key]['name'] + "</div>"
-          +'<div class="songartist">'+data['results'][key]['artist'] + '</div>'
-          +'<div style="clear: left;"'
-          + "</a></div>" );
-        }
-      })
-      .fail(function(data) {
-        if(data != "")
-          alert(data['responseText']);
-      });
-});
-
-$("#volume").change(function(event) {
-  $("#volumeindicator").html($("#volume").val());
-  $.get( "volume/"+$("#volume").val() );
-});
-
-
-function updateQueue() {
-  $( ".queue" ).html("");
-  $.get( "queue")
-    .done(function(data) {
-      for(var key in data['queue']) {
-        //$( ".result" ).append('<a href="" id="'+data['results'][key]['id']+'" class="tracklink">'
-        $( ".queue" ).append('<div class="songresult">'
-        +'<img class="songresult_img" src="'+data['queue'][key]['album']['images'][2]['url']+'" />'
-        +'<div class="songtitle" style="font-weight: bold;">'+data['queue'][key]['name'] + "</div>"
-        +'<div class="songartist">'+data['queue'][key]['artists'][0]['name'] + '</div>'
-        +'<div style="clear: left;"'
-        + "</div>" );
-      }
-    });
-}
-updateQueue();
-
-var pos=0.0;
-var playing=false;
-var track_id=false;
-
-function updateCurrent() {
-  $.get("current")
-    .done(function(data) {
-      var volume = data['device']['volume_percent'];
-      pos = Math.round(data['progress_ms']/1000);
-      playing = data['is_playing'];
-      var track_len = Math.round(data['item']['duration_ms']/1000);
-      var track_name = data['item']['name'];
-      var track_artist = data['item']['artists'][0]['name'];
-      var devicename = data['device']['name'];
-      var imagesrc = data['item']['album']['images'][0]['url'];
-      if (track_id != data['item']['id']) {
-        track_id = data['item']['id'];
-        updateQueue();
-      }
-
-      if(devicename == "{{ playback_device_name }}") {
-        $("#volumeindicator").html(volume);
-        $("#volume").val(volume);
-        $("#currentlyPlaying").html('<img src="'+ imagesrc +'" style="width: 100%; max-width: 300px;"></img><br>');
-        $("#currentlyPlaying").append(track_artist + ' - ' + track_name + ' (<span id="pos">'+ secondsToMinutes(pos) +'</span>/' + secondsToMinutes(track_len) + ')');
-      }
-
-      var nextUpdateIn = Math.min( 60000, (track_len-pos)*1000+2000  );
-      if(nextUpdateIn<5000) {
-        console.log("nextUpdateIn "+str(nextUpdateIn)+", setting to 5000");
-        nextUpdateIn = 5000;
-      }
-      timer = setTimeout(updateCurrent, nextUpdateIn);
-    });
-}
-var timer = setTimeout(updateCurrent, 0);
-setTimeout(proceedTrackPos, 1000);
-proceedtrackpos_last_timestamp = Date.now();
-
-function proceedTrackPos() {
-  if(playing) {
-    //pos = pos+1;
-    pos = pos + (Date.now()-proceedtrackpos_last_timestamp)/1000;
-  }
-  $("#pos").html(secondsToMinutes(pos));
-  proceedtrackpos_last_timestamp = Date.now();
-  setTimeout(proceedTrackPos, 1000);
-}
-
-function secondsToMinutes(pos) {
-  return(Math.floor(pos/60) + ":" + String( Math.round(pos)%60 ).padStart(2, '0'))
-}
-
-
-</script>
 </body>
 </html>

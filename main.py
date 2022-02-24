@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import os
 import subprocess
+import html
 
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials, SpotifyOAuth
@@ -18,8 +19,7 @@ import tornado.web
 
 
 load_dotenv()
-MAX_VOLUME = 86     # Raspberry Pi 3 will produce distorted audio above 86% volume
-playback_device_name = os.getenv("PLAYBACK_DEVICE_NAME")
+playback_device_name = os.getenv("SPOTIFY_PLAYBACK_DEVICE_NAME")
 debug = False
 
 
@@ -93,11 +93,13 @@ def mysql_get_cursor():
     return mysql_connection.cursor()
 
 
-def get_song_cost(track_len):
+def get_song_cost(track_len, bill_user):
     global queue
     if(len(queue) == 0):
         return 0
-    elif (track_len >= 240):
+    elif (bill_user.is_admin):
+        return 0
+    elif (track_len >= 300):
         return 2
     else:
         return 1
@@ -117,6 +119,9 @@ class BILLUser:
     def __init__(self,billcode,check_code=True):
 
         if (check_code==False):
+            if not(billcode and billcode.isdigit() and len(billcode)>=2 and len(billcode)<=4):
+                print("Invalid bill_key:", str(self.bill_key))
+                raise Exception("bill_key read from secure cookie is not valid!")
             self.bill_key = billcode
 
         else:
@@ -128,15 +133,23 @@ class BILLUser:
 
             response = bill_query('102,'+self.bill_key+',0,'+self.bill_code)
             if response:
-                self.name = response
+                # Use html.unescape to convert characters not compatible with latin_1 to utf8
+                self.name = html.unescape(response)
             else:
                 raise Exception("Kontrollera BILL-kod")
 
+        # Check if user is admin
+        self.is_admin = False
+        if(os.path.exists('adminkeys')):
+            with open('adminkeys', 'r') as f:
+                for line in f:
+                    if line[:-1]==self.bill_key:
+                        self.is_admin = True
+                        break
+
+
     def get_credits(self):
-        if self.bill_key and self.bill_key.isdigit() and len(self.bill_key)==4:
-            response = bill_query('602,3,'+self.bill_key+',0,0')
-        else:
-            raise Exception("bill_key is invalid:"+str(self.bill_key))
+        response = bill_query('602,3,'+self.bill_key+',0,0')
         if response:
             return int(response)
         else:
@@ -166,8 +179,9 @@ class MainHandler(BaseHandler):
 
         global playback_device_name
         bill_key = self.current_user.decode()
+        bill_user = BILLUser(self.current_user.decode(),check_code=False)
         name = self.get_secure_cookie("name").decode()
-        self.render("index.html", playback_device_name=playback_device_name, user=bill_key, name=name, credits=BILLUser(bill_key,check_code=False).get_credits())
+        self.render("index.html", playback_device_name=playback_device_name, user=bill_key, name=name, admin=bill_user.is_admin, credits=BILLUser(bill_key,check_code=False).get_credits())
 
     def post(self):
         try:
@@ -201,13 +215,13 @@ class PlayHandler(BaseHandler):
 
         bill_user = BILLUser(self.current_user.decode(),check_code=False)
         song_length = float(spotify_login().track("spotify:track:"+song_url)['duration_ms'])/1000
-        if not bill_user.check_credit(get_song_cost(song_length)):
+        if not bill_user.check_credit(get_song_cost(song_length,bill_user)):
             self.write("Kreditteckning saknas")
             return
 
         try:
             if playback_state=="none":  # Start playback immediately
-                spotify_login().start_playback(device_id=get_playback_device_id(), uris=["spotify:track:"+song_url])
+                spotify_start_playback_with(song_url)
                 #queue=[(spotify_login().track("spotify:track:"+song_url))]
                 #queue[-1]['in_queue'] = True
 
@@ -216,11 +230,11 @@ class PlayHandler(BaseHandler):
                 queue.append(spotify_login().track("spotify:track:"+song_url))
                 queue[-1]['in_queue'] = False
 
-            bill_user.consume_credit(get_song_cost(song_length))
+            bill_user.consume_credit(get_song_cost(song_length,bill_user))
 
         # Pass exception to user as it may contain relevant info such as "Spotify account in use elsewhere"
         except Exception as e:
-            print(traceback.format_exc())
+            print(e)
             self.write(str(e))
 
 class MPDPlayHandler(BaseHandler):
@@ -244,7 +258,7 @@ class MPDPlayHandler(BaseHandler):
         song_info['in_queue'] = False
 
         bill_user = BILLUser(self.current_user.decode(),check_code=False)
-        if not bill_user.check_credit(get_song_cost(float(song_info['duration']))):
+        if not bill_user.check_credit(get_song_cost(float(song_info['duration']),bill_user)):
             self.write("Kreditteckning saknas")
             return
 
@@ -261,16 +275,31 @@ class MPDPlayHandler(BaseHandler):
                 mpdclient.play()
                 #queue=[song_info]   # Remember to change in_queue=True if uncomment this!
 
-            bill_user.consume_credit(get_song_cost(float(song_info['duration'])))
+            bill_user.consume_credit(get_song_cost(float(song_info['duration']),bill_user))
 
         # Pass exception to user as it may contain relevant info such as "Spotify account in use elsewhere"
         except Exception as e:
-            print(traceback.format_exc())
+            print(e)
             self.write(str(e))
 
 
-class SearchHandler(tornado.web.RequestHandler):
+class DeleteHandler(BaseHandler):
+    @tornado.web.authenticated
     def post(self):
+        global queue
+        song_id = self.get_argument('id')
+        print("Attempting to delete", song_id, "from playlist.")
+
+        for i in range(len(queue)):
+            if(queue[i]['id'] == song_id):
+                queue.pop(i)
+                break
+
+class SearchHandler(BaseHandler):
+    @tornado.web.authenticated
+    def post(self):
+        bill_user = BILLUser(self.current_user.decode(),check_code=False)
+
         if(self.request.body==b''):
             return
         try:
@@ -285,12 +314,15 @@ class SearchHandler(tornado.web.RequestHandler):
                 "name": track['name'],
                 "artist": track['artists'][0]['name'],
                 "image": track['album']['images'], "id": track['id'],
-                "credits": get_song_cost(int(track['duration_ms'])/1000)
+                "credits": get_song_cost(int(track['duration_ms'])/1000, bill_user)
             })
         self.write({"results": results_list})
 
-class MPDSearchHandler(tornado.web.RequestHandler):
+class MPDSearchHandler(BaseHandler):
+    @tornado.web.authenticated
     def post(self):
+        bill_user = BILLUser(self.current_user.decode(),check_code=False)
+
         mpdclient = mpd_connect()
         results_list = []
         for idx, track in enumerate(mpdclient.search("filename", self.request.body.decode())):
@@ -305,25 +337,19 @@ class MPDSearchHandler(tornado.web.RequestHandler):
                 "artist": artist,
                 "image": [{"url": "static/mp3_icon_600.png"}, {"url": "static/mp3_icon_600.png"}, {"url": "static/mp3_icon_64.png"}],
                 "id": track['file'],
-                "credits": get_song_cost(float(track['duration']))
+                "credits": get_song_cost(float(track['duration']), bill_user)
             })
 
         self.write({"results": results_list})
 
 class VolumeHandler(tornado.web.RequestHandler):
     def get(self, volume):
-        spotify_login().volume(int(volume), device_id=get_playback_device_id())
-        mpd_connect().setvol(int(int(volume)*0.8))
+        try:
+            spotify_login().volume(int(volume), device_id=get_playback_device_id())
+        except:
+            pass
+        mpd_connect().setvol(int(volume))
 
-def get_pulseaudio_volume():
-    result = subprocess.run(['pulsemixer', '--get-volume'], stdout=subprocess.PIPE)
-    return int(result.stdout.decode().split(" ")[0])
-
-def set_pulseaudio_volume(vol):
-    vol = int(vol)
-    if not vol in range(0, MAX_VOLUME+1):
-        raise Exception("Volume "+str(vol)+" not inside range (0,"+str(MAX_VOLUME)+")")
-    subprocess.run(['pulsemixer', '--set-volume', vol], stdout=subprocess.PIPE)
 
 class CurrentHandler(tornado.web.RequestHandler):
     def get(self):
@@ -338,8 +364,7 @@ class CurrentHandler(tornado.web.RequestHandler):
                 'device': {
                     'name': playback_device_name,
                     'is_active': True,
-                    'volume_percent': int(min(float(mpdstatus['volume'])/0.8, 100)),
-                    #'volume_percent': get_pulseaudio_volume(),
+                    'volume_percent': int(mpdstatus['volume']),
                 },
                 'progress_ms': int(float(mpdstatus['elapsed'])*1000),
                 'item': {
@@ -364,7 +389,6 @@ class CurrentHandler(tornado.web.RequestHandler):
         else:
             current_playback = spotify_login().current_playback()
             if current_playback is not None:
-                #current_playback['device']['volume_percent'] = get_pulseaudio_volume()
                 self.write(current_playback)
             else:
                 #self.set_status(500)
@@ -372,49 +396,65 @@ class CurrentHandler(tornado.web.RequestHandler):
                 return
 
 
-class PauseHandler(tornado.web.RequestHandler):
-    def get(self):
-        spotify_login().pause_playback(device_id=get_playback_device_id())
+class MediaControlHandler(MainHandler):
+    @tornado.web.authenticated
 
-class StartHandler(tornado.web.RequestHandler):
-    def get(self):
-        spotify_login().start_playback(device_id=get_playback_device_id())
+    def post(self):
+        global current_track_type
+        try:
+            current_track_type
+        except:
+            current_track_type = None
+
+        print("current_track_type:", current_track_type)
+
+        if current_track_type == "spotify":
+            if  (self.get_argument('action') == 'play'):
+                spotify_login().start_playback(device_id=get_playback_device_id())
+            elif(self.get_argument('action') == 'pause'):
+                spotify_login().pause_playback(device_id=get_playback_device_id())
+            elif(self.get_argument('action') == 'prev'):
+                spotify_login().previous_track(device_id=get_playback_device_id())
+            elif(self.get_argument('action') == 'next'):
+                pass
+                #spotify_login().next_track(device_id=get_playback_device_id())
+        if current_track_type == "mpd":
+            mpdclient = mpd_connect()
+            if  (self.get_argument('action') == 'play'):
+                mpdclient.pause(0)
+            elif(self.get_argument('action') == 'pause'):
+                mpdclient.pause(1)
+            elif(self.get_argument('action') == 'prev'):
+                mpdclient.previous()
+
 
 class QueueHandler(tornado.web.RequestHandler):
     def get(self):
-        global queue
-
-        # current_playback = spotify_login().current_playback()
-        # if (current_playback == None):
-        #     queue = []
-        # else:       # Remove already played songs from our list of the queue
-        #     current_track_id = current_playback['item']['id']
-        #     for i in range(len(queue)):
-        #         if(queue[i]['id'] == current_track_id):
-        #             queue = queue[i:]
-        #             break
-
+        global queue, queue_maintenance_needed
+        queue_maintenance_needed = True
         queue_maintenance()
         self.write({"queue": queue})
 
 
 last_queue_maintenance_run = datetime.min
+queue_maintenance_needed = False
 def queue_maintenance():
-    last_queue_maintenance_run_handle = tornado.ioloop.IOLoop.current().call_later(30, queue_maintenance)
+    #last_queue_maintenance_run_handle = tornado.ioloop.IOLoop.current().call_later(30, queue_maintenance)
     global last_queue_maintenance_run
-    if(datetime.now()-last_queue_maintenance_run < timedelta(seconds=20)):
+    global queue_maintenance_needed
+
+    if not queue_maintenance_needed:
+        return
+
+    if(datetime.now()-last_queue_maintenance_run < timedelta(seconds=25)):
         print("queue_maintenance() skipping, last run", (datetime.now()-last_queue_maintenance_run).total_seconds(), "seconds ago")
-        tornado.ioloop.IOLoop.current().remove_timeout(last_queue_maintenance_run_handle)
         return
 
     print("queue_maintenance() run, last run", (datetime.now()-last_queue_maintenance_run).total_seconds(), "seconds ago")
     last_queue_maintenance_run = datetime.now()
 
-    #next_run_in = 30.0
-    #tornado.ioloop.IOLoop.current().call_later(next_run_in, queue_maintenance)
-    #print("  next run in", next_run_in)
-
     global queue
+    global current_track_type
     mpdclient = mpd_connect()
     mpdstatus = mpdclient.status()
 
@@ -422,6 +462,7 @@ def queue_maintenance():
     if mpdstatus['state'] == "play":
         # Trim queue variable up until and including currently playing track
         current_track_id = mpdclient.currentsong()['file']
+        current_track_type = "mpd"
         for i in range(len(queue)):
             if(queue[i]['id'] == current_track_id):
                 print("Cleared", i+1, "items from queue up until mpd id",current_track_id)
@@ -437,6 +478,7 @@ def queue_maintenance():
             if (queue[0]['type']=="mpd"):     # mpd type
                 mpdclient.add(queue[0]['id'])
             elif (queue[0]['type']=="track"): # Spotify type
+                print("Spotify playback queued in future: IOLoop.call_later("+str(time_left)+", spotify_start_playback_with, "+str(queue[0]['id'])+")")
                 tornado.ioloop.IOLoop.current().call_later(time_left, spotify_start_playback_with, queue[0]['id'])
             queue[0]['in_queue'] = True
 
@@ -458,12 +500,23 @@ def queue_maintenance():
             else:
                 # Put this app to sleep
                 print("Putting queue_maintenance() to sleep")
-                tornado.ioloop.IOLoop.current().remove_timeout(last_queue_maintenance_run_handle)
+                #tornado.ioloop.IOLoop.current().remove_timeout(last_queue_maintenance_run_handle)
+                queue_maintenance_needed = False
+
 
         # Case 3: Spotify is playing
         else:
+            try:
+                get_playback_device_id()
+            except Exception as e:
+                print("Spotify-konto ej tillgängligt")
+                print("Putting queue_maintenance() to sleep")
+                queue_maintenance_needed = False
+                return
+
             # Trim queue variable up until and including currently playing track
             current_track_id = current_playback['item']['id']
+            current_track_type = "spotify"
             for i in range(len(queue)):
                 if(queue[i]['id'] == current_track_id):
                     print("Cleared", i+1, "items from queue up until spotify id",current_track_id)
@@ -477,14 +530,20 @@ def queue_maintenance():
                 print("I will attempt at dealing with this piece of track:")
                 print(queue[0])
                 if (queue[0]['type']=="mpd"):     # mpd type
+                    print("MPD playback queued in future: IOLoop.call_later("+str(time_left)+", mpd_start_playback_with, "+str(queue[0]['id'])+")")
                     tornado.ioloop.IOLoop.current().call_later(time_left, mpd_start_playback_with, queue[0]['id'])
                 elif (queue[0]['type']=="track"): # Spotify type
                     spotify_login().add_to_queue("spotify:track:"+queue[0]['id'], device_id=get_playback_device_id())
 
 def spotify_start_playback_with(song_url):
+    print("Running spotify_start_playback_with("+str(song_url)+")")
+    playback_device_id = get_playback_device_id()
+    spotify_login().repeat("off", playback_device_id)
+    spotify_login().shuffle("off", playback_device_id)
     spotify_login().start_playback(device_id=get_playback_device_id(), uris=["spotify:track:"+song_url])
 
 def mpd_start_playback_with(song_url):
+    print("Running mpd_start_playback_with("+str(song_url)+")")
     mpdclient = mpd_connect()
     mpdclient.add(song_url)
     mpdclient.play()
@@ -492,16 +551,14 @@ def mpd_start_playback_with(song_url):
 def make_app():
     return tornado.web.Application([
         (r"/", MainHandler),
-        (r"/jquery-3.5.1.min.js()", tornado.web.StaticFileHandler, {'path': 'jquery-3.5.1.min.js'}),
-        (r"/bootstrap-4.5.3-dist/(.*)", tornado.web.StaticFileHandler, {'path': 'bootstrap-4.5.3-dist'}),
         (r"/static/(.*)", tornado.web.StaticFileHandler, {'path': 'static'}),
         (r"/logout", LogoutHandler),
         (r"/play_track/(.*)", PlayHandler),
+        (r"/delete_track", DeleteHandler),
         (r"/search", SearchHandler),
         (r"/volume/(.*)", VolumeHandler),
         (r"/current", CurrentHandler),
-        (r"/play", StartHandler),
-        (r"/pause", PauseHandler),
+        (r"/mediacontrol", MediaControlHandler),
         (r"/queue", QueueHandler),
         (r"/mpdsearch", MPDSearchHandler),
         (r"/mpd_play_track", MPDPlayHandler),
@@ -515,6 +572,8 @@ def make_app():
 if __name__ == "__main__":
     app = make_app()
     app.listen(8888, "localhost")
+
     #tornado.ioloop.IOLoop.current().call_later(5.0, queue_maintenance)
+    tornado.ioloop.PeriodicCallback(queue_maintenance, 30000).start()
 
     tornado.ioloop.IOLoop.current().start()
