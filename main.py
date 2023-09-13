@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import os
 import subprocess
 import html
+import geoip2.database
 
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials, SpotifyOAuth
@@ -26,6 +27,7 @@ debug = False
 # Define global variables
 spmask = None
 queue = []
+lastlogin = {}
 
 
 def spotify_login():
@@ -184,6 +186,30 @@ class MainHandler(BaseHandler):
         self.render("index.html", playback_device_name=playback_device_name, user=bill_key, name=name, admin=bill_user.is_admin, credits=BILLUser(bill_key,check_code=False).get_credits())
 
     def post(self):
+        try:
+            with geoip2.database.Reader('/var/lib/GeoIP/GeoLite2-Country.mmdb') as reader:
+                remote_ip = self.request.headers.get("X-Forwarded-For") or self.request.remote_ip
+                response = reader.country(remote_ip)
+                client_country = response.country.iso_code
+                if (client_country != "FI"):
+                    print("GeoIP rejected login from IP", remote_ip, "("+client_country+")")
+                    self.write("Din IP-adress är inte godkänd för att använda denna tjänst.")
+                    return
+                print("User logged in from IP", remote_ip, "("+client_country+")")
+        except Exception as e:
+            print(traceback.format_exc())
+
+        try:
+            remote_ip = self.request.headers.get("X-Forwarded-For") or self.request.remote_ip
+            if lastlogin[remote_ip] + timedelta(seconds=3) > datetime.now():
+                #self.set_status(429)  # 429 Too Many Requests
+                self.write("Kontrollera BILL-kod")
+                return
+        except:
+            pass
+        finally:
+            lastlogin[remote_ip] = datetime.now()
+
         try:
             billuser = BILLUser(self.get_argument("billcode"))
         except Exception as e:
